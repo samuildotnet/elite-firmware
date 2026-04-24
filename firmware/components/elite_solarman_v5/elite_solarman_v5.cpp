@@ -109,7 +109,12 @@ void EliteSolarmanV5::connect_() {
     return;
   }
 
-  sock_ = socket(res->ai_family, res->ai_socktype, 0);
+  // Use lwIP's POSIX-shim functions explicitly. Inside namespace
+  // esphome::elite_solarman_v5, the unqualified name `socket` would
+  // bind to the sibling namespace `esphome::socket` rather than
+  // lwIP's macro `lwip_socket(...)`. Same for `connect`, `close`,
+  // `setsockopt`, `send`, `recv` further below.
+  sock_ = ::lwip_socket(res->ai_family, res->ai_socktype, 0);
   if (sock_ < 0) {
     ESP_LOGW(TAG, "socket() failed: %d", errno);
     freeaddrinfo(res);
@@ -118,12 +123,12 @@ void EliteSolarmanV5::connect_() {
 
   // Reasonable connect timeout
   struct timeval tv = {.tv_sec = 10, .tv_usec = 0};
-  setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-  setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  ::lwip_setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  ::lwip_setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-  if (connect(sock_, res->ai_addr, res->ai_addrlen) != 0) {
+  if (::lwip_connect(sock_, res->ai_addr, res->ai_addrlen) != 0) {
     ESP_LOGW(TAG, "connect() to %s:%u failed: %d", server_.c_str(), port_, errno);
-    close(sock_);
+    ::lwip_close(sock_);
     sock_ = -1;
     freeaddrinfo(res);
     return;
@@ -142,7 +147,7 @@ void EliteSolarmanV5::connect_() {
 
 void EliteSolarmanV5::disconnect_() {
   if (sock_ >= 0) {
-    close(sock_);
+    ::lwip_close(sock_);
     sock_ = -1;
   }
 }
@@ -150,7 +155,7 @@ void EliteSolarmanV5::disconnect_() {
 bool EliteSolarmanV5::send_(const std::vector<uint8_t> &frame) {
   if (sock_ < 0)
     return false;
-  ssize_t n = ::send(sock_, frame.data(), frame.size(), 0);
+  ssize_t n = ::lwip_send(sock_, frame.data(), frame.size(), 0);
   if (n < 0 || static_cast<size_t>(n) != frame.size()) {
     ESP_LOGW(TAG, "send() failed (%zd of %zu): errno=%d", n, frame.size(), errno);
     disconnect_();
