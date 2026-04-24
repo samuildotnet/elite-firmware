@@ -25,6 +25,16 @@ esphome:
     version: "0.1.0"
   comment: "Elite Energy dongle — Deye 3p LV (register heritage: Lewa-Reka)"
 
+# Lewa-Reka's package ships an api.encryption.key placeholder that fails
+# ESPHome's base64 validator. Override with a real key from secrets.yaml.
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
 # ---- Stock ESPHome MQTT-TLS publisher (endpoint #1: our prod) ----
 # Topic taxonomy matches infra/emqx/acl.conf in elite-energy:
 #   v1/t/{tenant}/s/{site}/i/{inverter}/sensor/{name}/state
