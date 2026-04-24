@@ -1,0 +1,74 @@
+# =====================================================================
+# Elite Energy WiFi dongle — Deye SUN-12K-SG04LP3 (3-phase LV battery)
+# =====================================================================
+#
+# This is the only file an installer edits per physical device.
+# It glues together:
+#   1. Lewa-Reka's upstream register map (Apache 2.0) for SUN-*-SG04LP3
+#   2. Elite Energy overrides (ESP32-C3 board, MAX3485 RS485 pinout)
+#   3. Elite Energy MQTT-TLS publisher  -> elite.prygoda.xyz:8883
+#   4. Partner MQTT-TLS publisher       -> 95.60.174.157:8883
+#   5. Solarman V5 binary publisher     -> iot.talent-monitoring.com:10000
+#
+# Build / flash:
+#   esphome run firmware/devices/elite-deye-12k-01.yaml
+#
+# OTA push (after first flash):
+#   esphome run firmware/devices/elite-deye-12k-01.yaml \
+#     --device elite-deye-12k-01.local
+# ---------------------------------------------------------------------
+
+substitutions:
+  # ---- Identity ---------------------------------------------------
+  name:                  "elite-deye-12k-01"
+  friendly_name:         "Elite Deye 12K"
+  device_description:    "Elite Energy WiFi dongle for Deye SUN-12K-SG04LP3"
+
+  # ---- Tenancy / topic taxonomy (matches infra/emqx/acl.conf) ---
+  tenant_slug:           "elite"
+  site_slug:             "home-chernihiv"
+  inverter_slug:         "deye-12k-01"
+
+  # ---- Modbus -----------------------------------------------------
+  modbus_controller_id:  deye_modbus_controller
+  modbus_inverter_address: "0x01"
+  baud_rate:             "9600"
+  update_interval:       "5s"
+
+  # ---- Safe-mode defaults (used when HA / our cloud is offline) --
+  safe_mode_delay:                       "600s"
+  default_maximum_battery_charge_current: "140"
+  default_max_sell_power:                 "12000"
+  default_system_work_mode:               "Zero Export To Load"
+  default_solar_sell:                     "on"
+  default_force_off_grid:                 "off"
+  enable_sync_time:                       "false"
+
+# ---- Pull Lewa-Reka's register map (Apache 2.0) ------------------
+# We pin a tag so CI builds are reproducible; bump the ref to upgrade.
+packages:
+  pv_inverter:
+    url: https://github.com/Lewa-Reka/esphome-deye-inverter
+    ref: main
+    refresh: 1d
+    files:
+      - pv_inverter/deye_hybrid_3p_lv.yaml
+
+  # ---- Elite Energy overrides on top of Lewa-Reka -----------------
+  elite: !include ../elite-base.yaml
+
+# ---- Hardware: ESP32-C3-DevKitM-1 (override Lewa-Reka's esp32dev) -
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+# ---- UART pins for MAX3485 transceiver ---------------------------
+# RX = GPIO20, TX = GPIO21, RE/DE tied to GPIO5 (TX-enable)
+uart:
+  tx_pin: GPIO21
+  rx_pin: GPIO20
+
+modbus:
+  flow_control_pin: GPIO5

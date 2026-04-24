@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Elite Energy — прошивка свистка</title>
+    <link rel="icon" href="data:," />
+    <script
+      type="module"
+      src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"
+    ></script>
+    <style>
+      :root {
+        --bg: #0e0e0e;
+        --fg: #d4d4d4;
+        --accent: #4ec9b0;
+        --warn: #ce9178;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
+        background: var(--bg);
+        color: var(--fg);
+        line-height: 1.55;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 20px 80px;
+      }
+      h1 {
+        font-size: 1.8rem;
+        margin-bottom: 0.2em;
+      }
+      h1 small {
+        color: var(--accent);
+        font-size: 0.6em;
+        font-weight: 400;
+      }
+      h2 {
+        margin-top: 2.4em;
+        font-size: 1.15rem;
+        color: var(--accent);
+        border-bottom: 1px solid #333;
+        padding-bottom: 6px;
+      }
+      ol li {
+        margin: 0.5em 0;
+      }
+      .install-row {
+        display: flex;
+        gap: 16px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: 24px 0;
+        padding: 18px;
+        border: 1px solid var(--accent);
+        background: #1a1a1a;
+      }
+      esp-web-install-button {
+        --esp-tools-button-color: #ffffff;
+        --esp-tools-button-text-color: #0e0e0e;
+        --esp-tools-button-border-radius: 0;
+      }
+      .browser-warning {
+        background: #2d1f10;
+        border: 1px solid var(--warn);
+        color: var(--warn);
+        padding: 10px 14px;
+        margin-bottom: 16px;
+        display: none;
+      }
+      a { color: var(--accent); }
+      code {
+        background: #232323;
+        padding: 1px 6px;
+      }
+      footer {
+        margin-top: 60px;
+        padding-top: 16px;
+        border-top: 1px solid #333;
+        font-size: 0.85rem;
+        opacity: 0.7;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>
+        Elite Energy <small>// firmware-flasher</small>
+      </h1>
+      <p>
+        Веб-прошивальщик для свистка Elite Energy
+        (ESP32-C3 + MAX3485, для инвертора Deye SUN-12K-SG04LP3).
+      </p>
+
+      <div class="browser-warning" id="warn">
+        ⚠️ Этот браузер <b>не поддерживает Web Serial API</b>. Открой
+        страницу в Chrome 89+ или Edge на десктопе.
+      </div>
+
+      <h2>Прошивка</h2>
+      <ol>
+        <li>Подключи свисток к компьютеру USB-C кабелем (с данными).</li>
+        <li>Нажми кнопку ниже.</li>
+        <li>В окне браузера выбери порт (обычно один — <code>USB JTAG/serial debug unit</code>).</li>
+        <li>Подожди ~60 секунд.</li>
+      </ol>
+
+      <div class="install-row">
+        <esp-web-install-button manifest="manifests/elite-deye-12k-01.json">
+          <button slot="activate">▶ INSTALL Elite Energy Firmware</button>
+          <span slot="unsupported">Браузер не поддерживается — нужен Chrome или Edge.</span>
+          <span slot="not-allowed">Web Serial доступен только по HTTPS.</span>
+        </esp-web-install-button>
+        <span style="opacity: 0.6;">
+          last build:
+          <a href="https://github.com/samuildotnet/elite-firmware/releases/latest"
+            >github releases</a
+          >
+        </span>
+      </div>
+
+      <h2>WiFi настройка</h2>
+      <p>
+        Прошивка вшивает дефолты <code>SSID=Apple</code> /
+        <code>password=12345678</code>.
+        Если такая сеть не найдена — свисток создаёт точку
+        <code>Elite-Setup-XXXX</code> с паролем
+        <code>EliteSetup2026</code>. Подключись к ней с телефона и
+        введи реальные WiFi-креды в открывшемся captive-portal.
+      </p>
+
+      <h2>Проблемы при прошивке</h2>
+      <ul>
+        <li>
+          <b>"Failed to enter download mode"</b> — нажми и держи кнопку
+          BOOT на свистке, кратко нажми RESET, отпусти BOOT. Затем
+          заново INSTALL.
+        </li>
+        <li>
+          <b>Кнопка серая / "браузер не поддерживается"</b> — открой эту
+          страницу в Chrome 89+ или Edge на компьютере.
+        </li>
+        <li>
+          <b>Свисток вообще не появляется в списке портов</b> — кабель
+          без данных (продают как "только зарядка"). Возьми другой.
+        </li>
+      </ul>
+
+      <h2>Полная инструкция (русский)</h2>
+      <p>
+        <a
+          href="https://github.com/samuildotnet/elite-firmware/blob/main/docs/flash-instructions-ru.md"
+          >docs/flash-instructions-ru.md</a
+        >
+      </p>
+
+      <footer>
+        firmware source &middot;
+        <a href="https://github.com/samuildotnet/elite-firmware">github.com/samuildotnet/elite-firmware</a>
+        &middot; Apache 2.0
+      </footer>
+    </main>
+
+    <script>
+      if (!("serial" in navigator)) {
+        document.getElementById("warn").style.display = "block";
+      }
+    </script>
+  </body>
+</html>

@@ -1,74 +1,40 @@
-# Shared ESPHome base for every Elite Energy dongle.
+# =====================================================================
+# Elite Energy overrides on top of Lewa-Reka's deye_hybrid_3p_lv package.
+# Included from firmware/devices/*.yaml — never used standalone.
 #
-# A device YAML (`firmware/devices/*.yaml`) sets the substitutions and
-# !include's this file plus an inverter profile from `profiles/`.
-#
-# The device YAML is the only file that knows the inverter slug, the
-# tenant/site slugs, and the MQTT credentials. Everything else is
-# vendor-specific and lives in the profile.
+# Lewa-Reka already provides: esphome / api / ota / wifi / captive_portal
+# / logger / uart / modbus / modbus_controller / diagnostic sensors.
+# This file adds the Elite-Energy-specific bits:
+#   - Project name + version (overrides Lewa-Reka's so HA shows our brand)
+#   - Stock ESPHome MQTT-TLS publisher  -> elite.prygoda.xyz
+#   - Custom external components for partner + Solarman cloud publishers
+#   - Status binary sensor + reboot button
+# ---------------------------------------------------------------------
 
 substitutions:
-  # Required by the device YAML — declared here only as documentation.
-  # ESPHome merges these from the device file via !include.
-  device_id:        "REPLACE_IN_DEVICE_YAML"   # e.g. elite-deye-12k-01
-  tenant_slug:      "REPLACE_IN_DEVICE_YAML"   # e.g. elite
-  site_slug:        "REPLACE_IN_DEVICE_YAML"   # e.g. home-chernihiv
-  inverter_slug:    "REPLACE_IN_DEVICE_YAML"   # e.g. deye-12k-01
-  poll_interval:    "5s"
+  # WiFi / API / OTA / fallback hotspot creds resolve via !secret.
+  wifi_ssid:           !secret wifi_ssid
+  wifi_password:       !secret wifi_password
+  fallback_password:   !secret fallback_password
+  api_key:             !secret api_key
+  ota_password:        !secret ota_password
 
 esphome:
-  name:             "${device_id}"
-  friendly_name:    "${device_id}"
-  name_add_mac_suffix: false
   project:
     name: "elite_energy.dongle"
     version: "0.1.0"
+  comment: "Elite Energy dongle — Deye 3p LV (register heritage: Lewa-Reka)"
 
-esp32:
-  board: esp32-c3-devkitm-1
-  variant: esp32c3
-  framework:
-    type: esp-idf
-
-# ------------- WiFi (with captive portal fallback) ------------------
-wifi:
-  ssid:        !secret wifi_ssid
-  password:    !secret wifi_password
-  power_save_mode: none
-  fast_connect: false
-  # If the home WiFi is unreachable for >1 min, boot a fallback AP so
-  # the customer can re-enter creds via the captive portal.
-  ap:
-    ssid:      "Elite-Setup-${device_id}"
-    password:  !secret ap_password
-
-captive_portal:
-
-# ------------- Logging + ESPHome native API -------------------------
-logger:
-  level: INFO
-  baud_rate: 0   # disable serial logger to free UART for Modbus
-
-api:
-  password: !secret api_password
-  reboot_timeout: 0s   # don't reboot if cloud disconnects briefly
-
-# ------------- OTA (signed pushes from CI) --------------------------
-ota:
-  - platform: esphome
-    password: !secret ota_password
-
-# ------------- MQTT-TLS to elite-energy broker ----------------------
+# ---- Stock ESPHome MQTT-TLS publisher (endpoint #1: our prod) ----
+# Topic taxonomy matches infra/emqx/acl.conf in elite-energy:
+#   v1/t/{tenant}/s/{site}/i/{inverter}/sensor/{name}/state
 mqtt:
-  broker:    !secret mqtt_broker
-  port:      !secret mqtt_port
-  username:  !secret mqtt_username
-  password:  !secret mqtt_password
-  client_id: "${device_id}"
-  # Topic taxonomy matches infra/emqx/acl.conf in elite-energy:
-  #   v1/t/{tenant}/s/{site}/i/{inverter}/sensor/{name}/state
-  #   v1/t/{tenant}/s/{site}/i/{inverter}/command/+
-  topic_prefix: "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}"
+  broker:        !secret mqtt_elite_broker
+  port:          !secret mqtt_elite_port
+  username:      !secret mqtt_elite_username
+  password:      !secret mqtt_elite_password
+  client_id:     "${name}-elite"
+  topic_prefix:  "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}"
   birth_message:
     topic:    "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}/status"
     payload:  "online"
@@ -77,49 +43,45 @@ mqtt:
     topic:    "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}/status"
     payload:  "offline"
     retain:   true
-  discovery: false           # we don't use Home Assistant discovery
-  log_topic: null            # don't publish ESPHome logs over MQTT
+  discovery: false
+  log_topic: null
   reboot_timeout: 0s
   keepalive: 30s
-  # mTLS / TLS-server-cert pinning is configured at runtime via the
-  # `idf_components` block below; see elite_mqtt_tls.h additions.
-  ssl_fingerprints:
-    # SHA-256 fingerprint of the Let's Encrypt R10/R11 ISRG-Root-X1
-    # chain. Updated automatically when the broker rotates certs.
-    - "REPLACE_WITH_BROKER_CERT_FINGERPRINT"
 
-# ------------- UART for Modbus RTU ----------------------------------
-# Wired to MAX3485 RS485 transceiver. RE/DE tied together to GPIO5.
-uart:
-  id: mod_uart
-  tx_pin: GPIO21
-  rx_pin: GPIO20
-  baud_rate: 9600          # Deye factory default
-  stop_bits: 1
-  parity: NONE
-  data_bits: 8
+# ---- External components: partner MQTT + Solarman V5 -------------
+external_components:
+  - source:
+      type: local
+      path: ../components
+    components:
+      - elite_partner_mqtt
+      - elite_solarman_v5
 
-modbus:
-  id: mod_bus
-  uart_id: mod_uart
-  flow_control_pin: GPIO5  # ties to RE/DE on MAX3485 (TX-enable)
+# Endpoint #2: partner MQTT-TLS (anonymous).
+elite_partner_mqtt:
+  id: partner_mqtt
+  broker:        !secret mqtt_partner_broker
+  port:          !secret mqtt_partner_port
+  username:      !secret mqtt_partner_username
+  password:      !secret mqtt_partner_password
+  client_id:     "${name}-partner"
+  topic_prefix:  "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}"
+  publish_interval: 30s
 
-# ------------- Heartbeat + status sensors (always on) ---------------
-sensor:
-  - platform: uptime
-    name: "Uptime"
-    id: uptime_s
-    update_interval: 60s
+# Endpoint #3: Solarman cloud V5 binary push.
+elite_solarman_v5:
+  id: solarman_cloud
+  server:        !secret solarman_server
+  port:          !secret solarman_port
+  logger_serial: !secret solarman_logger_serial
+  modbus_controller_id: ${modbus_controller_id}
+  push_interval: 60s
 
-  - platform: wifi_signal
-    name: "WiFi RSSI"
-    update_interval: 60s
-
+# ---- Status sensors + reboot button ------------------------------
 binary_sensor:
   - platform: status
-    name: "Status"
+    name: "Elite Status"
 
-# Reboot button (operator can issue from dashboard via MQTT command).
 button:
   - platform: restart
     name: "Reboot"

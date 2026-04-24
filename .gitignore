@@ -1,4 +1,4 @@
-# ESPHome build artefacts
+# ---- ESPHome / PlatformIO build artefacts -------------------------
 .esphome/
 .pioenvs/
 .piolibdeps/
@@ -7,12 +7,14 @@ build/
 *.bin
 *.elf
 *.factory.bin
+*.ota.bin
 
-# Real per-device secrets (ONLY secrets.example.yaml is committed)
+# ---- Real per-device secrets (only the .example is committed) ----
 secrets.yaml
 firmware/devices/*.local.yaml
+firmware/secrets/*
 
-# Editor / OS noise
+# ---- Editor / OS noise -------------------------------------------
 .vscode/
 .idea/
 *.swp
@@ -20,7 +22,9 @@ firmware/devices/*.local.yaml
 .DS_Store
 Thumbs.db
 
-# Python venv / pipx
+# ---- Python venv / pipx ------------------------------------------
 .venv/
+venv/
 __pycache__/
 *.pyc
+*.pyo

@@ -1,100 +1,85 @@
 # Elite Energy — Firmware
 
-Firmware for the Elite Energy WiFi / Cellular dongle that bridges
-inverter Modbus RTU to our cloud MQTT broker over TLS.
+ESP32-C3 firmware for the **Elite Energy WiFi dongle** that bridges
+**Deye SUN-12K-SG04LP3** (3-phase LV battery) Modbus RTU traffic to
+**three** independent ingestion endpoints in parallel.
 
-> **Heritage**: forked from
-> [lewa-reka/esphome-deye-inverter](https://github.com/lewa-reka/esphome-deye-inverter)
-> (Apache 2.0). See `NOTICE` for attribution. Our additions are kept
-> in `firmware/elite-*.yaml` and `firmware/profiles/elite-*.yaml` so a
+> **Heritage**: register map borrowed from
+> [Lewa-Reka/esphome-deye-inverter](https://github.com/Lewa-Reka/esphome-deye-inverter)
+> (Apache 2.0). See `NOTICE` for attribution. Our additions live in
+> `firmware/elite-base.yaml` and `firmware/components/elite_*` so a
 > rebase from upstream stays mechanical.
 
 ---
 
-## What this firmware does
+## Architecture
 
 ```
-                 ┌───────────────────────────────────────┐
-                 │  ESP32-C3 (Wi-Fi)  /  ESP32-S3+SIM7080 │
-                 │                                       │
-                 │   ESPHome runtime                     │
-                 │   ├── modbus_controller (RS485 RTU)   │
-                 │   │     polls Deye / Huawei / …       │
-                 │   ├── mqtt (TLS, per-device user/pw)  │
-                 │   ├── ota (signed)                    │
-                 │   └── captive_portal (provisioning)   │
-                 └───────┬───────────────────┬───────────┘
-                         │                   │
-                  RS485 / Modbus RTU     mqtts://elite.prygoda.xyz:18883
-                         │                   │
-                  ┌──────┴──────┐      ┌─────┴───────┐
-                  │  Inverter   │      │   EMQX      │
-                  │  (Deye …)   │      │   broker    │
-                  └─────────────┘      └─────────────┘
+                ┌──────────────────────────────────────────┐
+                │           ESP32-C3-DevKitM-1             │
+                │                                          │
+                │   ESPHome runtime                        │
+                │   ├── modbus_controller (RS485 RTU)      │
+                │   │      polls Deye every 5 s            │
+                │   │                                      │
+                │   ├── stock mqtt:                        │
+                │   │      → mqtts://elite.prygoda.xyz     │
+                │   │                                      │
+                │   ├── elite_partner_mqtt (custom)        │
+                │   │      → mqtts://95.60.174.157:8883    │
+                │   │                                      │
+                │   └── elite_solarman_v5 (custom)         │
+                │          → tcp://iot.talent-monitoring   │
+                │                  .com:10000              │
+                └────────┬─────────────────────────────────┘
+                         │ Modbus RTU @ 9600 baud
+                         ▼
+                ┌────────────────┐
+                │  Deye SUN-12K  │
+                │   SG04LP3      │
+                └────────────────┘
 ```
 
-Telemetry is published to
-`v1/t/{tenant}/s/{site}/i/{inverter}/sensor/{name}/state`.
-Dispatch commands are received on
-`v1/t/{tenant}/s/{site}/i/{inverter}/command/+`. The topic taxonomy
-matches the EMQX ACL rules in
-[`samuildotnet/elite-energy/infra/emqx/acl.conf`](https://github.com/samuildotnet/elite-energy/blob/main/infra/emqx/acl.conf).
+| # | Endpoint                          | Protocol             | Auth                  | Purpose                        |
+|---|-----------------------------------|----------------------|-----------------------|--------------------------------|
+| 1 | `elite.prygoda.xyz:8883`          | MQTT-TLS             | per-device user/pass  | dashboard + VPP dispatch       |
+| 2 | `95.60.174.157:8883`              | MQTT-TLS             | anonymous             | partner ingestion              |
+| 3 | `iot.talent-monitoring.com:10000` | Solarman V5 (binary) | logger SN handshake   | Solarman / Deye-app continuity |
+
+Topic taxonomy on endpoints 1 + 2 is identical and matches the EMQX ACL
+in [`samuildotnet/elite-energy/infra/emqx/acl.conf`](https://github.com/samuildotnet/elite-energy/blob/main/infra/emqx/acl.conf):
+
+```
+v1/t/{tenant}/s/{site}/i/{inverter}/sensor/{name}/state
+v1/t/{tenant}/s/{site}/i/{inverter}/binary_sensor/{name}/state
+v1/t/{tenant}/s/{site}/i/{inverter}/text_sensor/{name}/state
+v1/t/{tenant}/s/{site}/i/{inverter}/status
+v1/t/{tenant}/s/{site}/i/{inverter}/command/+   # incoming dispatch
+```
 
 ---
 
 ## Hardware
 
-### Track 1 — Wi-Fi dongle (MVP, this repo)
-
-| Part | Model | Qty | Approx. price |
-|---|---|---:|---:|
-| MCU | ESP32-C3-DevKitM-1 | 1 | $4 |
-| RS485 transceiver | MAX3485 / SP3485 (SOIC-8) | 1 | $0.50 |
-| Buck DC-DC | LM2596 module (9–24 V → 5 V, 1 A) | 1 | $1 |
-| Cable | 4-wire shielded, 1 m, RJ45 or Phoenix | 1 | $1.50 |
-| Enclosure | 3D-printed PETG case | 1 | $0.50 |
-| Misc | Pin headers, screws, heat-shrink | — | $0.50 |
-| **Total BOM** | | | **~$8** |
-
-### Track 2 — Cellular dongle (post-MVP, deferred — see ADR-002)
-
-ESP32-S3-WROOM-1 + SIM7080G. Will live on the same firmware base, only
-the board YAML changes.
-
----
-
-## Wiring
-
-```
-       Inverter RS485 port
-       ┌─────────────────┐
-       │ A+ (D+)  B- (D-)│
-       └──┬───────────┬──┘
-          │           │
-          │           │
-   ┌──────┴───────────┴──────┐
-   │  MAX3485 RS485 transceiver│
-   │  RO  RE  DE  DI    A  B   │
-   └───┬────┬───┬───┬────────────┘
-       │    │   │   │
-       │    └───┘   │       (RE/DE tied together,
-       │      │     │        driven by GPIO5 = TX_EN)
-       │      │     │
-   GPIO20  GPIO5  GPIO21      ESP32-C3-DevKitM-1
-    (RX)   (TX_EN) (TX)
-```
-
-Power: feed 9–24 V from inverter's auxiliary RJ45 pins through the
-LM2596 buck → 5 V → ESP32 5V pin. Common ground.
-
-See `docs/wiring.md` for full pinout + photos once first board is
-assembled.
+ESP32-C3-DevKitM-1 + MAX3485 RS485 transceiver + LM2596 buck.
+**Total BOM: ~$8.** See [`docs/bom.md`](docs/bom.md) for sourcing
+links + Ukrainian distributor alternatives, [`docs/wiring.md`](docs/wiring.md)
+for the schematic.
 
 ---
 
 ## Build & flash
 
-```sh
+### For end users (recommended)
+
+Open **https://flash.elite.prygoda.xyz** in Chrome or Edge → click
+"Connect" → select the USB device → click "Install". Done in 60 seconds
+without any software install. Russian step-by-step:
+[`docs/flash-instructions-ru.md`](docs/flash-instructions-ru.md).
+
+### For developers
+
+```bash
 # 1. install ESPHome (one-time)
 pipx install esphome
 
@@ -102,7 +87,7 @@ pipx install esphome
 git clone https://github.com/samuildotnet/elite-firmware
 cd elite-firmware
 cp secrets.example.yaml secrets.yaml
-${EDITOR:-nano} secrets.yaml   # fill in WiFi creds, MQTT user/pw
+${EDITOR:-nano} secrets.yaml   # WiFi creds, per-device MQTT user/pw, Solarman SN
 
 # 3. compile + flash over USB-C
 esphome run firmware/devices/elite-deye-12k-01.yaml
@@ -112,48 +97,51 @@ esphome run firmware/devices/elite-deye-12k-01.yaml \
   --device elite-deye-12k-01.local
 ```
 
-The device will:
-1. Connect to Wi-Fi using `secrets.yaml`. If it fails, falls back to
-   `Elite-Setup-XXXX` SoftAP for 5 min — phone connects, opens
-   `192.168.4.1`, enters real Wi-Fi creds. Saved to NVS.
-2. Connect to `mqtts://elite.prygoda.xyz:18883` (TLS, server cert
-   pinned to our CA, client auth via username/password from
-   `secrets.yaml`).
-3. Start polling Modbus regs every 5 s and publishing to
-   `v1/t/.../sensor/.../state`.
-4. Subscribe to `v1/t/.../command/+` for dispatch.
-
 ---
 
 ## Repo layout
 
 ```
 firmware/
-├── elite-base.yaml          # shared: WiFi, MQTT-TLS, OTA, captive portal
-├── profiles/
-│   ├── deye-sg0xlp1.yaml    # SUN-{5,8,10,12}K-SG04LP1  (1-phase LV)
-│   ├── deye-sg0xlp3.yaml    # SUN-{5,8,10,12}K-SG04LP3  (3-phase LV) ← MVP
-│   └── deye-sg0xhp3.yaml    # SUN-{30,50,100}K-SG01HP3  (3-phase HV)
-└── devices/
-    └── elite-deye-12k-01.yaml   # one file per physical inverter
-
-boards/
-└── elite-wifi-c3.yaml       # ESP32-C3 + MAX3485 board definition
+├── elite-base.yaml                 # Elite-Energy overrides (mqtt + ext components)
+├── devices/
+│   └── elite-deye-12k-01.yaml      # one file per physical inverter
+└── components/
+    ├── elite_partner_mqtt/         # 2nd MQTT-TLS publisher (anonymous)
+    └── elite_solarman_v5/          # Solarman V5 binary push to cloud
 
 docs/
-├── wiring.md
-└── bom.md
+├── wiring.md                       # ASCII pinout + RJ45 mapping
+├── bom.md                          # parts list + AliExpress links
+└── flash-instructions-ru.md        # Russian end-user quickstart
+
+.github/workflows/
+└── build.yml                       # ESPHome compile + artifact upload
 ```
 
-A device YAML is just substitutions + `<<: !include` of base + profile.
-To add a new inverter: copy `elite-deye-12k-01.yaml`, change the
-substitutions (tenant slug, site slug, inverter slug, MQTT creds),
-flash.
+A device YAML pulls the upstream Lewa-Reka `deye_hybrid_3p_lv` package,
+overlays `elite-base.yaml`, and overrides the ESP32-C3 board + UART
+pins. Every other thing — register definitions, sensor names, work
+modes — lives upstream and refreshes on every build.
+
+---
+
+## Status of the three publishers
+
+| Publisher              | Connect | Telemetry | Heartbeat | Notes |
+|---|---|---|---|---|
+| `mqtt:` (elite prod)   | ✅      | ✅        | ✅        | uses ESPHome stock MQTT |
+| `elite_partner_mqtt`   | ✅      | ✅        | ✅        | hooks into App.get_sensors() — every state change is mirrored |
+| `elite_solarman_v5`    | ✅      | ⚠️ stub   | ✅        | TCP + handshake + heartbeat work; data-report frame still has empty modbus payload (TODO #1) |
+
+The Solarman publisher emits valid V5 frames (start byte / length /
+control code / logger SN / checksum / end byte all correct) but the
+modbus snapshot is empty until we hook into ESPHome's
+`modbus_controller` last-response cache. Tracked in
+[issue #1](https://github.com/samuildotnet/elite-firmware/issues/1).
 
 ---
 
 ## License
 
-Apache 2.0 — inherited from the upstream
-[lewa-reka/esphome-deye-inverter](https://github.com/lewa-reka/esphome-deye-inverter).
-See `LICENSE` and `NOTICE`.
+Apache 2.0 — see `LICENSE` and `NOTICE` for upstream attribution.
