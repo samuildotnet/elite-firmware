@@ -15,6 +15,9 @@
 #include "lwip/netdb.h"
 #include "sdkconfig.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
 namespace esphome {
 namespace elite_solarman_v5 {
 
@@ -56,18 +59,19 @@ void EliteSolarmanV5::setup() {
              "reject every frame. Set the real serial from the LSW3 sticker "
              "in secrets.yaml.");
   }
-  connect_();
+  start_connect_();
 }
 
 void EliteSolarmanV5::loop() {
   const uint32_t now = millis();
 
-  if (sock_ < 0) {
-    // Reconnect throttled to once every 30s.
-    static uint32_t last_attempt = 0;
-    if (now - last_attempt > 30000) {
-      last_attempt = now;
-      connect_();
+  if (sock_.load(std::memory_order_acquire) < 0) {
+    // Reconnect throttled to once every 30s. Per-instance state so
+    // multiple EliteSolarmanV5 components don't trample each other's
+    // back-off windows.
+    if (now - last_reconnect_attempt_ > 30000) {
+      last_reconnect_attempt_ = now;
+      start_connect_();
     }
     return;
   }
@@ -91,21 +95,48 @@ void EliteSolarmanV5::dump_config() {
   ESP_LOGCONFIG(TAG, "  Modbus parent:    %p", static_cast<void *>(modbus_));
 }
 
-void EliteSolarmanV5::connect_() {
+void EliteSolarmanV5::start_connect_() {
   if (server_.empty()) {
     ESP_LOGE(TAG, "No server configured");
     return;
   }
+  // Don't pile up a second connect task if one is still running.
+  bool expected = false;
+  if (!connecting_.compare_exchange_strong(expected, true)) {
+    ESP_LOGD(TAG, "connect already in flight, skipping");
+    return;
+  }
+  // 4 KiB stack is comfortably enough for getaddrinfo + a single
+  // connect; tskIDLE_PRIORITY+1 keeps it well below the ESPHome
+  // main loop priority so polling never starves.
+  TaskHandle_t handle = nullptr;
+  BaseType_t ok = xTaskCreate(
+      &EliteSolarmanV5::connect_task_,
+      "sol_v5_conn",
+      4096,
+      this,
+      tskIDLE_PRIORITY + 1,
+      &handle);
+  if (ok != pdPASS) {
+    ESP_LOGE(TAG, "xTaskCreate failed for connect task");
+    connecting_.store(false, std::memory_order_release);
+  }
+}
+
+void EliteSolarmanV5::connect_task_(void *arg) {
+  auto *self = static_cast<EliteSolarmanV5 *>(arg);
 
   struct addrinfo hints {};
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
   struct addrinfo *res = nullptr;
   char port_str[8];
-  std::snprintf(port_str, sizeof(port_str), "%u", port_);
-  int err = getaddrinfo(server_.c_str(), port_str, &hints, &res);
+  std::snprintf(port_str, sizeof(port_str), "%u", self->port_);
+  int err = getaddrinfo(self->server_.c_str(), port_str, &hints, &res);
   if (err != 0 || res == nullptr) {
-    ESP_LOGW(TAG, "DNS lookup failed for %s: %d", server_.c_str(), err);
+    ESP_LOGW(TAG, "DNS lookup failed for %s: %d", self->server_.c_str(), err);
+    self->connecting_.store(false, std::memory_order_release);
+    vTaskDelete(nullptr);
     return;
   }
 
@@ -114,48 +145,62 @@ void EliteSolarmanV5::connect_() {
   // bind to the sibling namespace `esphome::socket` rather than
   // lwIP's macro `lwip_socket(...)`. Same for `connect`, `close`,
   // `setsockopt`, `send`, `recv` further below.
-  sock_ = ::lwip_socket(res->ai_family, res->ai_socktype, 0);
-  if (sock_ < 0) {
+  int s = ::lwip_socket(res->ai_family, res->ai_socktype, 0);
+  if (s < 0) {
     ESP_LOGW(TAG, "socket() failed: %d", errno);
     freeaddrinfo(res);
+    self->connecting_.store(false, std::memory_order_release);
+    vTaskDelete(nullptr);
     return;
   }
 
-  // Reasonable connect timeout
+  // Reasonable connect timeout (still applies to send/recv afterwards).
   struct timeval tv = {.tv_sec = 10, .tv_usec = 0};
-  ::lwip_setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-  ::lwip_setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  ::lwip_setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+  ::lwip_setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-  if (::lwip_connect(sock_, res->ai_addr, res->ai_addrlen) != 0) {
-    ESP_LOGW(TAG, "connect() to %s:%u failed: %d", server_.c_str(), port_, errno);
-    ::lwip_close(sock_);
-    sock_ = -1;
+  if (::lwip_connect(s, res->ai_addr, res->ai_addrlen) != 0) {
+    ESP_LOGW(TAG, "connect() to %s:%u failed: %d", self->server_.c_str(), self->port_, errno);
+    ::lwip_close(s);
     freeaddrinfo(res);
+    self->connecting_.store(false, std::memory_order_release);
+    vTaskDelete(nullptr);
     return;
   }
   freeaddrinfo(res);
 
-  ESP_LOGI(TAG, "Connected to %s:%u (V5 logger sn=%" PRIu32 ")", server_.c_str(), port_,
-           logger_serial_le_);
+  // Publish fd to the main loop. acquire/release ordering pairs with
+  // the load in loop().
+  self->sock_.store(s, std::memory_order_release);
+  self->connecting_.store(false, std::memory_order_release);
+
+  ESP_LOGI(TAG, "Connected to %s:%u (V5 logger sn=%" PRIu32 ")", self->server_.c_str(),
+           self->port_, self->logger_serial_le_);
 
   // First frame after connect is a logger info / handshake. We send a
   // minimal payload so the cloud associates the TCP session with our
-  // logger SN before any data frame arrives.
+  // logger SN before any data frame arrives. Safe to call from this
+  // task because send_() reads sock_ atomically and writes are not
+  // racing the main loop yet (modbus snapshot push waits on next
+  // loop tick).
   std::vector<uint8_t> empty;
-  send_(build_frame(v5::CTRL_HANDSHAKE_REQ, empty));
+  self->send_(self->build_frame(v5::CTRL_HANDSHAKE_REQ, empty));
+
+  vTaskDelete(nullptr);
 }
 
 void EliteSolarmanV5::disconnect_() {
-  if (sock_ >= 0) {
-    ::lwip_close(sock_);
-    sock_ = -1;
+  int s = sock_.exchange(-1, std::memory_order_acq_rel);
+  if (s >= 0) {
+    ::lwip_close(s);
   }
 }
 
 bool EliteSolarmanV5::send_(const std::vector<uint8_t> &frame) {
-  if (sock_ < 0)
+  int s = sock_.load(std::memory_order_acquire);
+  if (s < 0)
     return false;
-  ssize_t n = ::lwip_send(sock_, frame.data(), frame.size(), 0);
+  ssize_t n = ::lwip_send(s, frame.data(), frame.size(), 0);
   if (n < 0 || static_cast<size_t>(n) != frame.size()) {
     ESP_LOGW(TAG, "send() failed (%zd of %zu): errno=%d", n, frame.size(), errno);
     disconnect_();

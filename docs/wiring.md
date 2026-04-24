@@ -7,8 +7,8 @@
                               5V from buck ──── 5V│●                   │
                                        GND ───  G │●                   │
                                                   │                    │
-                  ┌────────────┐                  │  GPIO20 (RX) ●─────┼── DI of MAX3485
-                  │  MAX3485   │                  │  GPIO21 (TX) ●─────┼── RO of MAX3485
+                  ┌────────────┐                  │  GPIO20 (RX) ●─────┼── RO of MAX3485
+                  │  MAX3485   │                  │  GPIO21 (TX) ●─────┼── DI of MAX3485
                   │  RS485     │                  │  GPIO5  (DE) ●─────┼── RE+DE of MAX3485
                   │  half-dpx  │                  │                    │
                   │            │                  └────────────────────┘

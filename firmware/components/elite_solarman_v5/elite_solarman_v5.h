@@ -2,6 +2,7 @@
 
 #ifdef USE_ESP_IDF
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -46,7 +47,15 @@ class EliteSolarmanV5 : public Component {
   std::vector<uint8_t> build_frame(uint16_t control_code, const std::vector<uint8_t> &modbus_payload);
 
  protected:
-  void connect_();
+  /// Spawn a one-shot FreeRTOS task that performs blocking DNS + TCP
+  /// connect off the ESPHome main loop. The task atomically publishes
+  /// the resulting fd into sock_ and resets connecting_ when done, so
+  /// loop() never stalls waiting for the network.
+  void start_connect_();
+
+  /// Static FreeRTOS entry point. `arg` is `this`.
+  static void connect_task_(void *arg);
+
   void disconnect_();
   bool send_(const std::vector<uint8_t> &frame);
   void send_heartbeat_();
@@ -62,10 +71,18 @@ class EliteSolarmanV5 : public Component {
   uint32_t push_interval_ms_{60000};
   modbus_controller::ModbusController *modbus_{nullptr};
 
-  int sock_{-1};
+  // sock_ is read by loop() and written by the connect task — atomic
+  // because we touch it from two FreeRTOS tasks. -1 means "not connected".
+  std::atomic<int> sock_{-1};
+
+  // True between start_connect_() and the connect task completing.
+  // Prevents respawning a second connect task on top of an in-flight one.
+  std::atomic<bool> connecting_{false};
+
   uint16_t seq_{0};
   uint32_t last_push_{0};
   uint32_t last_heartbeat_{0};
+  uint32_t last_reconnect_attempt_{0};
   uint32_t boot_time_s_{0};
 };
 
