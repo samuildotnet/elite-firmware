@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_PORT, CONF_SERVER
+from esphome.const import CONF_ID, CONF_PORT
 
 from esphome.components import modbus_controller
+
+CONF_SERVER = "server"
 
 CODEOWNERS = ["@elite-energy"]
 DEPENDENCIES = ["network", "modbus_controller"]
