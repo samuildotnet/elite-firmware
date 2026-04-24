@@ -1,0 +1,125 @@
+# Shared ESPHome base for every Elite Energy dongle.
+#
+# A device YAML (`firmware/devices/*.yaml`) sets the substitutions and
+# !include's this file plus an inverter profile from `profiles/`.
+#
+# The device YAML is the only file that knows the inverter slug, the
+# tenant/site slugs, and the MQTT credentials. Everything else is
+# vendor-specific and lives in the profile.
+
+substitutions:
+  # Required by the device YAML — declared here only as documentation.
+  # ESPHome merges these from the device file via !include.
+  device_id:        "REPLACE_IN_DEVICE_YAML"   # e.g. elite-deye-12k-01
+  tenant_slug:      "REPLACE_IN_DEVICE_YAML"   # e.g. elite
+  site_slug:        "REPLACE_IN_DEVICE_YAML"   # e.g. home-chernihiv
+  inverter_slug:    "REPLACE_IN_DEVICE_YAML"   # e.g. deye-12k-01
+  poll_interval:    "5s"
+
+esphome:
+  name:             "${device_id}"
+  friendly_name:    "${device_id}"
+  name_add_mac_suffix: false
+  project:
+    name: "elite_energy.dongle"
+    version: "0.1.0"
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+# ------------- WiFi (with captive portal fallback) ------------------
+wifi:
+  ssid:        !secret wifi_ssid
+  password:    !secret wifi_password
+  power_save_mode: none
+  fast_connect: false
+  # If the home WiFi is unreachable for >1 min, boot a fallback AP so
+  # the customer can re-enter creds via the captive portal.
+  ap:
+    ssid:      "Elite-Setup-${device_id}"
+    password:  !secret ap_password
+
+captive_portal:
+
+# ------------- Logging + ESPHome native API -------------------------
+logger:
+  level: INFO
+  baud_rate: 0   # disable serial logger to free UART for Modbus
+
+api:
+  password: !secret api_password
+  reboot_timeout: 0s   # don't reboot if cloud disconnects briefly
+
+# ------------- OTA (signed pushes from CI) --------------------------
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# ------------- MQTT-TLS to elite-energy broker ----------------------
+mqtt:
+  broker:    !secret mqtt_broker
+  port:      !secret mqtt_port
+  username:  !secret mqtt_username
+  password:  !secret mqtt_password
+  client_id: "${device_id}"
+  # Topic taxonomy matches infra/emqx/acl.conf in elite-energy:
+  #   v1/t/{tenant}/s/{site}/i/{inverter}/sensor/{name}/state
+  #   v1/t/{tenant}/s/{site}/i/{inverter}/command/+
+  topic_prefix: "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}"
+  birth_message:
+    topic:    "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}/status"
+    payload:  "online"
+    retain:   true
+  will_message:
+    topic:    "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}/status"
+    payload:  "offline"
+    retain:   true
+  discovery: false           # we don't use Home Assistant discovery
+  log_topic: null            # don't publish ESPHome logs over MQTT
+  reboot_timeout: 0s
+  keepalive: 30s
+  # mTLS / TLS-server-cert pinning is configured at runtime via the
+  # `idf_components` block below; see elite_mqtt_tls.h additions.
+  ssl_fingerprints:
+    # SHA-256 fingerprint of the Let's Encrypt R10/R11 ISRG-Root-X1
+    # chain. Updated automatically when the broker rotates certs.
+    - "REPLACE_WITH_BROKER_CERT_FINGERPRINT"
+
+# ------------- UART for Modbus RTU ----------------------------------
+# Wired to MAX3485 RS485 transceiver. RE/DE tied together to GPIO5.
+uart:
+  id: mod_uart
+  tx_pin: GPIO21
+  rx_pin: GPIO20
+  baud_rate: 9600          # Deye factory default
+  stop_bits: 1
+  parity: NONE
+  data_bits: 8
+
+modbus:
+  id: mod_bus
+  uart_id: mod_uart
+  flow_control_pin: GPIO5  # ties to RE/DE on MAX3485 (TX-enable)
+
+# ------------- Heartbeat + status sensors (always on) ---------------
+sensor:
+  - platform: uptime
+    name: "Uptime"
+    id: uptime_s
+    update_interval: 60s
+
+  - platform: wifi_signal
+    name: "WiFi RSSI"
+    update_interval: 60s
+
+binary_sensor:
+  - platform: status
+    name: "Status"
+
+# Reboot button (operator can issue from dashboard via MQTT command).
+button:
+  - platform: restart
+    name: "Reboot"

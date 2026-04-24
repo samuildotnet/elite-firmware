@@ -1,0 +1,26 @@
+# ESPHome build artefacts
+.esphome/
+.pioenvs/
+.piolibdeps/
+.cache/
+build/
+*.bin
+*.elf
+*.factory.bin
+
+# Real per-device secrets (ONLY secrets.example.yaml is committed)
+secrets.yaml
+firmware/devices/*.local.yaml
+
+# Editor / OS noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Python venv / pipx
+.venv/
+__pycache__/
+*.pyc

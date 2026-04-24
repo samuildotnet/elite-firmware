@@ -1,0 +1,19 @@
+Elite Energy Firmware
+Copyright 2026 Elite Energy
+
+This product includes software developed by:
+
+    Lewa-Reka — esphome-deye-inverter
+    https://github.com/lewa-reka/esphome-deye-inverter
+    Licensed under the Apache License, Version 2.0
+
+The Modbus register definitions for Deye SUN-*-SG04LP{1,3} and
+SUN-*-SG01HP3 in firmware/profiles/deye-*.yaml are derived from the
+upstream project and remain under Apache 2.0.
+
+Elite Energy modifications and additions (firmware/elite-base.yaml,
+firmware/profiles/elite-*.yaml, boards/elite-*.yaml, docs/*) are also
+released under Apache 2.0.
+
+Per Apache 2.0 §4(d), this NOTICE file must be retained in any
+redistribution.
