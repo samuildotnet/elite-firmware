@@ -31,6 +31,9 @@ jobs:
           # The committed secrets.example.yaml has Apple/12345678 baked
           # in for the test fleet, which is fine for CI compilation —
           # nothing in this build phase contacts real WiFi or MQTT.
+          # ESPHome resolves !secret relative to the YAML file that
+          # references it, so we drop it next to elite-base.yaml.
+          cp secrets.example.yaml firmware/secrets.yaml
           cp secrets.example.yaml secrets.yaml
 
       - uses: esphome/build-action@v6
