@@ -1,0 +1,51 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  esphome-compile:
+    name: ESPHome compile (${{ matrix.device }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        device:
+          - elite-deye-12k-01
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialise CI secrets.yaml (placeholders only)
+        run: |
+          # The committed secrets.example.yaml has Apple/12345678 baked
+          # in for the test fleet, which is fine for CI compilation —
+          # nothing in this build phase contacts real WiFi or MQTT.
+          # ESPHome resolves !secret relative to the YAML file that
+          # references it, so we drop it next to elite-base.yaml.
+          cp secrets.example.yaml firmware/secrets.yaml
+          cp secrets.example.yaml secrets.yaml
+
+      - uses: esphome/build-action@v6
+        id: build
+        with:
+          yaml-file: firmware/devices/${{ matrix.device }}.yaml
+          version: latest
+          release-summary: "CI build of ${{ matrix.device }} from ${{ github.sha }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.device }}
+          path: ${{ steps.build.outputs.name }}/
+          if-no-files-found: error
+          retention-days: 30
