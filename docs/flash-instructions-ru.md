@@ -19,7 +19,7 @@
 
 ## Шаг 2. Открываем веб-прошивальщик
 
-Открой ссылку: **https://flash.elite.prygoda.xyz**
+Открой ссылку: **https://elite.prygoda.xyz/flash/**
 
 Прошивальщик откроется прямо в браузере — ничего скачивать не нужно.
 
@@ -66,7 +66,7 @@
 | Web Serial не появляется | Проверь что используешь Chrome 89+ или Edge. На Mac иногда нужно дать разрешение в Системных настройках → Конфиденциальность → Доступ к USB-устройствам. |
 | Прошивальщик пишет "Failed to enter download mode" | Нажми и держи кнопку BOOT на свистке, потом нажми RESET, потом отпусти BOOT. Затем заново INSTALL. |
 | "Cannot connect to WiFi" | Свисток создаст свою сеть Elite-Setup-XXXX (см. шаг 4). |
-| Данные не идут на наш дашборд | Проверь логи: открой https://flash.elite.prygoda.xyz, нажми LOGS — увидишь real-time логи. Если есть `MQTT connect failed` — пиши в поддержку. |
+| Данные не идут на наш дашборд | Проверь логи: открой https://elite.prygoda.xyz/flash/, нажми LOGS — увидишь real-time логи. Если есть `MQTT connect failed` — пиши в поддержку. |
 
 ## Совсем для упорных: ручная прошивка через esptool
 
@@ -75,7 +75,11 @@ pip install esptool
 # 1. Скачай firmware.factory.bin из последнего Release:
 #    https://github.com/samuildotnet/elite-firmware/releases/latest
 # 2. Прошивай:
-esptool.py --chip esp32c3 --port /dev/ttyACM0 \
+# Найди порт:
+#   macOS:   ls /dev/cu.usbmodem*
+#   Linux:   ls /dev/ttyACM* /dev/ttyUSB*
+#   Windows: см. Диспетчер устройств -> Порты (COM и LPT)
+esptool.py --chip esp32c3 --port <PORT> \
   --baud 460800 write_flash --flash_mode dio \
   --flash_freq 40m --flash_size 4MB \
   0x0 firmware.factory.bin
