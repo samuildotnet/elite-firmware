@@ -59,6 +59,15 @@ void EliteSolarmanV5::setup() {
              "reject every frame. Set the real serial from the LSW3 sticker "
              "in secrets.yaml.");
   }
+  if (register_blocks_.empty()) {
+    ESP_LOGW(TAG,
+             "No register_blocks configured — Solarman cloud will only see "
+             "heartbeats. Add register_blocks to the YAML to mirror Modbus "
+             "snapshots.");
+  } else {
+    ESP_LOGCONFIG(TAG, "Mirroring %zu register block(s) to Solarman cloud",
+                  register_blocks_.size());
+  }
   start_connect_();
 }
 
@@ -83,7 +92,12 @@ void EliteSolarmanV5::loop() {
 
   if (now - last_push_ >= push_interval_ms_) {
     last_push_ = now;
+    // Order matters: send the snapshot we already have, *then* queue
+    // fresh reads for the next cycle. This keeps the V5 push interval
+    // independent of Modbus latency — a slow inverter doesn't push our
+    // frame timing around.
     send_data_report_();
+    issue_register_reads_();
   }
 }
 
@@ -93,6 +107,11 @@ void EliteSolarmanV5::dump_config() {
   ESP_LOGCONFIG(TAG, "  Logger serial:    %" PRIu32 " (LE)", logger_serial_le_);
   ESP_LOGCONFIG(TAG, "  Push interval:    every %" PRIu32 " ms", push_interval_ms_);
   ESP_LOGCONFIG(TAG, "  Modbus parent:    %p", static_cast<void *>(modbus_));
+  ESP_LOGCONFIG(TAG, "  Modbus address:   0x%02X", modbus_address_);
+  ESP_LOGCONFIG(TAG, "  Register blocks:  %zu", register_blocks_.size());
+  for (const auto &b : register_blocks_) {
+    ESP_LOGCONFIG(TAG, "    - 0x%04X (%u registers)", b.start_address, b.register_count);
+  }
 }
 
 void EliteSolarmanV5::start_connect_() {
@@ -215,23 +234,96 @@ void EliteSolarmanV5::send_heartbeat_() {
 }
 
 void EliteSolarmanV5::send_data_report_() {
-  auto modbus_payload = snapshot_modbus_payload_();
-  if (modbus_payload.empty())
+  // Stock LSW3 sends one V5 frame per Modbus block. We mirror that:
+  // each cached block becomes its own data-report frame so the cloud
+  // can dispatch them register-range by register-range.
+  if (register_blocks_.empty())
     return;
-  send_(build_frame(v5::CTRL_DATA_REQ, modbus_payload));
+  size_t sent = 0;
+  for (const auto &block : register_blocks_) {
+    auto it = register_cache_.find(block.start_address);
+    if (it == register_cache_.end() || it->second.empty()) {
+      // No cached data for this block yet — reads are still in flight
+      // (first cycle after boot) or the inverter didn't respond.
+      continue;
+    }
+    const size_t expected_bytes = static_cast<size_t>(block.register_count) * 2;
+    if (it->second.size() != expected_bytes) {
+      ESP_LOGW(TAG,
+               "Block 0x%04X cache size %zu != expected %zu — skipping",
+               block.start_address, it->second.size(), expected_bytes);
+      continue;
+    }
+    auto modbus_resp = build_modbus_read_response(block.register_count, it->second);
+    if (!send_(build_frame(v5::CTRL_DATA_REQ, modbus_resp))) {
+      // TCP write failed — disconnect_() already invoked, abort the rest
+      // of this push cycle. Reconnect kicks in on the next loop tick.
+      return;
+    }
+    ++sent;
+  }
+  ESP_LOGD(TAG, "Pushed %zu/%zu register block(s) to Solarman cloud",
+           sent, register_blocks_.size());
 }
 
-std::vector<uint8_t> EliteSolarmanV5::snapshot_modbus_payload_() {
-  // TODO: hook into modbus_controller's last-response cache. ESPHome's
-  // modbus_controller doesn't expose the raw last-response buffer
-  // publicly — implementing this properly requires either:
-  //   (a) intercepting modbus::ModbusDevice::on_modbus_data() via a
-  //       custom subclass, or
-  //   (b) re-issuing the same Modbus reads with a parallel client.
-  //
-  // For now we return an empty payload and only heartbeats keep the TCP
-  // session alive. Tracked in elite-firmware#1.
-  return {};
+void EliteSolarmanV5::issue_register_reads_() {
+  if (modbus_ == nullptr) {
+    ESP_LOGW(TAG, "No modbus_controller bound — cannot issue reads");
+    return;
+  }
+  for (const auto &block : register_blocks_) {
+    const uint16_t start = block.start_address;
+    const uint16_t count = block.register_count;
+    auto cmd = modbus_controller::ModbusCommandItem::create_read_command(
+        modbus_, modbus_controller::ModbusRegisterType::HOLDING, start, count,
+        [this, start, count](modbus_controller::ModbusRegisterType /*type*/,
+                             uint16_t /*addr*/,
+                             const std::vector<uint8_t> &data) {
+          const size_t expected = static_cast<size_t>(count) * 2;
+          if (data.size() != expected) {
+            ESP_LOGW(TAG,
+                     "Block 0x%04X: got %zu bytes, expected %zu — discarding",
+                     start, data.size(), expected);
+            return;
+          }
+          this->register_cache_[start] = data;
+        });
+    modbus_->queue_command(cmd);
+  }
+}
+
+std::vector<uint8_t> EliteSolarmanV5::build_modbus_read_response(
+    uint16_t register_count, const std::vector<uint8_t> &reg_data) const {
+  // Modbus RTU function-0x03 response layout:
+  //   [slave_addr][0x03][byte_count][data_bytes...][crc_lo][crc_hi]
+  // CRC covers everything from slave_addr through the last data byte.
+  std::vector<uint8_t> rsp;
+  rsp.reserve(3 + reg_data.size() + 2);
+  rsp.push_back(modbus_address_);
+  rsp.push_back(0x03);  // READ_HOLDING_REGISTERS
+  rsp.push_back(static_cast<uint8_t>(register_count * 2));
+  rsp.insert(rsp.end(), reg_data.begin(), reg_data.end());
+  const uint16_t crc = modbus_crc16(rsp.data(), rsp.size());
+  rsp.push_back(static_cast<uint8_t>(crc & 0xFF));         // low byte first
+  rsp.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));  // then high byte
+  return rsp;
+}
+
+uint16_t EliteSolarmanV5::modbus_crc16(const uint8_t *data, size_t len) {
+  // Standard Modbus CRC-16: polynomial 0xA001 (reflected 0x8005),
+  // initial value 0xFFFF, no final XOR, low byte transmitted first.
+  uint16_t crc = 0xFFFF;
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= static_cast<uint16_t>(data[i]);
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      if (crc & 0x0001) {
+        crc = (crc >> 1) ^ 0xA001;
+      } else {
+        crc >>= 1;
+      }
+    }
+  }
+  return crc;
 }
 
 std::vector<uint8_t> EliteSolarmanV5::build_frame(uint16_t control_code,

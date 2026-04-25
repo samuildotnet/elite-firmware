@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,16 @@
 
 namespace esphome {
 namespace elite_solarman_v5 {
+
+/// One contiguous block of holding registers we mirror to Solarman cloud.
+/// Each block is captured by issuing a parallel READ_HOLDING_REGISTERS
+/// command on top of whatever ESPHome's modbus_controller is already
+/// polling. The captured raw bytes go straight into the Modbus payload
+/// of a V5 data-report frame.
+struct RegisterBlock {
+  uint16_t start_address;
+  uint16_t register_count;
+};
 
 /**
  * Solarman V5 binary protocol publisher.
@@ -28,6 +39,15 @@ namespace elite_solarman_v5 {
  * the Solarman cloud will silently drop every frame — this component
  * still runs (and logs) so that the dongle stays operational, but no
  * data shows up in the customer's Solarman / Deye-app account.
+ *
+ * Modbus payload capture: we issue parallel `READ_HOLDING_REGISTERS`
+ * commands against the same `modbus_controller` that ESPHome is using
+ * for its sensor polling, then rebuild a Modbus RTU response frame
+ * (slave + 0x03 + byte_count + data + CRC16) and embed that as the V5
+ * frame's Modbus payload. Solarman cloud parses this exactly the way
+ * it would parse a stock LSW3's response. The doubling of Modbus
+ * traffic is negligible at 9600 baud — even a full 12-block sweep
+ * every 60s uses < 5 % of bus capacity.
  */
 class EliteSolarmanV5 : public Component {
  public:
@@ -36,6 +56,10 @@ class EliteSolarmanV5 : public Component {
   void set_logger_serial(const std::string &decimal);
   void set_push_interval(uint32_t ms) { push_interval_ms_ = ms; }
   void set_modbus_controller(modbus_controller::ModbusController *c) { modbus_ = c; }
+  void set_modbus_address(uint8_t a) { modbus_address_ = a; }
+  void add_register_block(uint16_t start, uint16_t count) {
+    register_blocks_.push_back({start, count});
+  }
 
   void setup() override;
   void loop() override;
@@ -45,6 +69,17 @@ class EliteSolarmanV5 : public Component {
   /// Encode an arbitrary Modbus RTU payload inside a V5 frame and
   /// queue it for transmission. Public so unit tests can poke at it.
   std::vector<uint8_t> build_frame(uint16_t control_code, const std::vector<uint8_t> &modbus_payload);
+
+  /// Reconstruct a Modbus RTU function-0x03 (read holding registers)
+  /// response: `[addr][0x03][byte_count][reg_data...][crc_lo][crc_hi]`.
+  /// `reg_data` is the raw byte buffer ESPHome handed back from
+  /// `ModbusCommandItem::on_data_func`. Public for unit testing.
+  std::vector<uint8_t> build_modbus_read_response(uint16_t register_count,
+                                                  const std::vector<uint8_t> &reg_data) const;
+
+  /// Modbus CRC-16 (polynomial 0xA001, initial 0xFFFF). Standard for
+  /// Modbus RTU. Public for unit testing.
+  static uint16_t modbus_crc16(const uint8_t *data, size_t len);
 
  protected:
   /// Spawn a one-shot FreeRTOS task that performs blocking DNS + TCP
@@ -61,15 +96,24 @@ class EliteSolarmanV5 : public Component {
   void send_heartbeat_();
   void send_data_report_();
 
-  /// Capture the last Modbus reply seen by the modbus_controller and
-  /// fold it into a V5 data-report frame.
-  std::vector<uint8_t> snapshot_modbus_payload_();
+  /// Queue READ_HOLDING_REGISTERS commands for every configured
+  /// register block. Their responses populate `register_cache_`
+  /// asynchronously (typically within a few hundred ms at 9600 baud).
+  void issue_register_reads_();
 
   std::string server_;
   uint16_t port_{10000};
   uint32_t logger_serial_le_{0};   // 4-byte little-endian
   uint32_t push_interval_ms_{60000};
   modbus_controller::ModbusController *modbus_{nullptr};
+  uint8_t modbus_address_{0x01};
+
+  std::vector<RegisterBlock> register_blocks_;
+  /// Latest raw register data per block, keyed by start_address.
+  /// Populated asynchronously by the modbus_controller when our
+  /// queued read commands complete. Read on the main loop when we
+  /// build the next data-report frame.
+  std::map<uint16_t, std::vector<uint8_t>> register_cache_;
 
   // sock_ is read by loop() and written by the connect task — atomic
   // because we touch it from two FreeRTOS tasks. -1 means "not connected".
