@@ -12,6 +12,11 @@
 #include "esphome/components/modbus_controller/modbus_controller.h"
 
 namespace esphome {
+
+namespace elite_provisioning {
+class EliteProvisioning;
+}
+
 namespace elite_solarman_v5 {
 
 /// One contiguous block of holding registers we mirror to Solarman cloud.
@@ -57,6 +62,11 @@ class EliteSolarmanV5 : public Component {
   void set_push_interval(uint32_t ms) { push_interval_ms_ = ms; }
   void set_modbus_controller(modbus_controller::ModbusController *c) { modbus_ = c; }
   void set_modbus_address(uint8_t a) { modbus_address_ = a; }
+  /// Bind to the elite_provisioning component. When set, the LSW3
+  /// serial is sourced from the ``elite-cfg`` NVS namespace at boot
+  /// instead of the ``logger_serial`` YAML field; an empty NVS value
+  /// disables this publisher (``mark_failed()`` so loop() never runs).
+  void set_provisioning(elite_provisioning::EliteProvisioning *p) { provisioning_ = p; }
   void add_register_block(uint16_t start, uint16_t count) {
     register_blocks_.push_back({start, count});
   }
@@ -107,6 +117,7 @@ class EliteSolarmanV5 : public Component {
   uint32_t push_interval_ms_{60000};
   modbus_controller::ModbusController *modbus_{nullptr};
   uint8_t modbus_address_{0x01};
+  elite_provisioning::EliteProvisioning *provisioning_{nullptr};
 
   std::vector<RegisterBlock> register_blocks_;
   /// Latest raw register data per block, keyed by start_address.

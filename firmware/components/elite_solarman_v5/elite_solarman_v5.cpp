@@ -11,6 +11,8 @@
 #include "esphome/core/hal.h"
 #include "esphome/core/log.h"
 
+#include "../elite_provisioning/elite_provisioning.h"
+
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "sdkconfig.h"
@@ -53,11 +55,29 @@ void EliteSolarmanV5::set_logger_serial(const std::string &decimal) {
 
 void EliteSolarmanV5::setup() {
   boot_time_s_ = millis() / 1000;
+
+  // When wired up to elite_provisioning, the LSW3 serial comes from
+  // the elite-cfg NVS namespace (key ``solarman_sn``). An empty value
+  // means the installer opted out of Solarman cloud at provision time —
+  // disable this publisher entirely so loop() never fires and the
+  // FreeRTOS connect task is never spawned.
+  if (provisioning_ != nullptr) {
+    const std::string &nvs_sn = provisioning_->solarman_serial();
+    if (nvs_sn.empty()) {
+      ESP_LOGI(TAG,
+               "elite-cfg.solarman_sn is empty — Solarman cloud publisher "
+               "disabled (mark_failed)");
+      this->mark_failed();
+      return;
+    }
+    set_logger_serial(nvs_sn);
+  }
+
   if (logger_serial_le_ == 0) {
     ESP_LOGW(TAG,
              "Solarman logger_serial is 0 — Solarman cloud will silently "
-             "reject every frame. Set the real serial from the LSW3 sticker "
-             "in secrets.yaml.");
+             "reject every frame. Set the real serial in elite-cfg NVS "
+             "(via web flasher) or secrets.yaml.");
   }
   if (register_blocks_.empty()) {
     ESP_LOGW(TAG,
