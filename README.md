@@ -132,13 +132,21 @@ modes — lives upstream and refreshes on every build.
 |---|---|---|---|---|
 | `mqtt:` (elite prod)   | ✅      | ✅        | ✅        | uses ESPHome stock MQTT |
 | `elite_partner_mqtt`   | ✅      | ✅        | ✅        | hooks into App.get_sensors() — every state change is mirrored |
-| `elite_solarman_v5`    | ✅      | ⚠️ stub   | ✅        | TCP + handshake + heartbeat work; data-report frame still has empty modbus payload (TODO #1) |
+| `elite_solarman_v5`    | ✅      | ✅        | ✅        | parallel READ_HOLDING_REGISTERS reads → CRC-correct Modbus RTU response embedded in V5 frame |
 
-The Solarman publisher emits valid V5 frames (start byte / length /
-control code / logger SN / checksum / end byte all correct) but the
-modbus snapshot is empty until we hook into ESPHome's
-`modbus_controller` last-response cache. Tracked in
-[issue #1](https://github.com/samuildotnet/elite-firmware/issues/1).
+The Solarman publisher mirrors a configurable list of `register_blocks`
+(addresses + counts) to the cloud once per `push_interval`. Each block
+becomes its own V5 data-report frame containing a complete Modbus RTU
+function-0x03 response (`[slave][0x03][byte_count][data][crc16]`) — the
+same wire format the stock LSW3 dongle uses, so the customer's Deye-app
+keeps working unchanged.
+
+Reads are queued through the same `modbus_controller` instance that
+ESPHome uses for sensor polling (`ModbusController::queue_command`).
+At 9600 baud RTU a full default-block sweep (170 registers) costs
+< 200 ms of bus time per minute — comfortably under the inverter's
+budget. Tweak `firmware/elite-base.yaml` → `elite_solarman_v5.register_blocks`
+for non-default Deye families.
 
 ---
 

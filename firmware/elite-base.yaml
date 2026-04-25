@@ -79,13 +79,39 @@ elite_partner_mqtt:
   publish_interval: 30s
 
 # Endpoint #3: Solarman cloud V5 binary push.
+#
+# `register_blocks` mirrors the holding-register windows the stock LSW3
+# dongle pulls off the Deye SUN-12K-SG04LP3. Each block becomes one V5
+# data-report frame; Solarman cloud joins them back into a sensor stream
+# matching what the customer's Deye-app expects. Source for the address
+# windows: Lewa-Reka's `deye_hybrid_3p_lv` register map (Apache 2.0) +
+# pysolarmanv5 community-documented Solarman frame conventions.
+#
+# Tweak per inverter family:
+#   - SUN-*-SG01LP1 / SG03LP1 (1-phase HV battery) — same windows
+#   - SUN-*-SG04LP3 (3-phase LV battery, what we ship) — defaults below
+#   - GEN3 hybrids — start range shifts to 0x0500; override per device
 elite_solarman_v5:
   id: solarman_cloud
   server:        !secret solarman_server
   port:          !secret solarman_port
   logger_serial: !secret solarman_logger_serial
   modbus_controller_id: ${modbus_controller_id}
+  modbus_address: 0x01
   push_interval: 60s
+  register_blocks:
+    # Identity / firmware version / device class
+    - { start: 0x0000, count: 30 }
+    # Running parameters: AC volts/amps/freq, PV power, grid power,
+    # load power, internal temps. The bulk of what shows up on the
+    # Deye-app "Now" screen.
+    - { start: 0x0258, count: 60 }
+    # Battery: SoC, voltage, charge/discharge current, BMS comms.
+    - { start: 0x0640, count: 50 }
+    # Settings mirror (work mode, sell-power cap, charge limits).
+    # Matches the "Settings" tab in Deye-app so customers see their
+    # latest changes propagate.
+    - { start: 0x0500, count: 50 }
 
 # ---- Status sensors + reboot button ------------------------------
 binary_sensor:
