@@ -5,14 +5,35 @@
 # Lewa-Reka already provides: esphome / api / ota / wifi / captive_portal
 # / logger / uart / modbus / modbus_controller / diagnostic sensors.
 # This file adds the Elite-Energy-specific bits:
-#   - Project name + version (overrides Lewa-Reka's so HA shows our brand)
-#   - Stock ESPHome MQTT-TLS publisher  -> elite.prygoda.xyz
-#   - Custom external components for partner + Solarman cloud publishers
+#   - Project metadata (overrides Lewa-Reka's so HA + ESP-Web-Tools show
+#     the "Elite Energy" brand)
+#   - Stock ESPHome MQTT-TLS publisher → mqtt.elite.prygoda.xyz
+#   - Solarman cloud V5 binary publisher (gated on elite-cfg.solarman_sn)
+#   - elite_provisioning component (reads the elite-cfg NVS namespace)
 #   - Status binary sensor + reboot button
+#
+# v0.2.0 changes vs v0.1.0:
+#   - Partner MQTT publisher removed entirely (along with partner secrets).
+#   - Solarman publisher now opt-in per device via NVS — leaving
+#     elite-cfg.solarman_sn empty disables it (no second TCP connection,
+#     no log noise from a 0-serial frame).
+#   - Identity (device_id, device_token, mqtt_host) now lives in NVS
+#     namespace ``elite-cfg`` and is written by the elite-energy backend
+#     ``/api/devices/provision`` endpoint at flash time. The stock
+#     ``mqtt:`` block still resolves credentials via ``!secret`` because
+#     ESPHome's MQTT component does not accept lambda-typed broker /
+#     username / password. Migrating that to NVS is tracked as the
+#     PR-A2 follow-up — it requires a custom MQTT external component
+#     (or upstream ESPHome support) and a coordinated topic-taxonomy
+#     change with the elite-energy ingest worker.
 # ---------------------------------------------------------------------
 
 substitutions:
   # WiFi / API / OTA / fallback hotspot creds resolve via !secret.
+  # In v0.2.0 the WiFi creds are populated into ESPHome's standard
+  # WiFi NVS keys by the web flasher (PR-C of this trio), so the
+  # ``!secret`` defaults below act only as the CI / dev-board fallback
+  # when secrets.yaml carries them.
   wifi_ssid:           !secret wifi_ssid
   wifi_password:       !secret wifi_password
   fallback_password:   !secret fallback_password
@@ -22,8 +43,8 @@ substitutions:
 esphome:
   project:
     name: "elite_energy.dongle"
-    version: "0.1.0"
-  comment: "Elite Energy dongle — Deye 3p LV (register heritage: Lewa-Reka)"
+    version: "0.2.0"
+  comment: "Elite Energy dongle — NVS-provisioned, single-publisher (Elite + optional Solarman cloud)"
 
 # Lewa-Reka's package ships an api.encryption.key placeholder that fails
 # ESPHome's base64 validator. Override with a real key from secrets.yaml.
@@ -35,9 +56,13 @@ ota:
   - platform: esphome
     password: !secret ota_password
 
-# ---- Stock ESPHome MQTT-TLS publisher (endpoint #1: our prod) ----
+# ---- Stock ESPHome MQTT-TLS publisher → mqtt.elite.prygoda.xyz ----
 # Topic taxonomy matches infra/emqx/acl.conf in elite-energy:
 #   v1/t/{tenant}/s/{site}/i/{inverter}/sensor/{name}/state
+#
+# Until PR-A2 ships a NVS-driven MQTT component, broker / username /
+# password come from ``secrets.yaml`` at build time. The web flasher
+# bakes per-device creds in via the ``!secret``-rendered build artefact.
 mqtt:
   broker:        !secret mqtt_elite_broker
   port:          !secret mqtt_elite_port
@@ -58,27 +83,24 @@ mqtt:
   reboot_timeout: 0s
   keepalive: 30s
 
-# ---- External components: partner MQTT + Solarman V5 -------------
+# ---- External components: provisioning + Solarman V5 -------------
 external_components:
   - source:
       type: local
       path: ../components
     components:
-      - elite_partner_mqtt
+      - elite_provisioning
       - elite_solarman_v5
 
-# Endpoint #2: partner MQTT-TLS (anonymous).
-elite_partner_mqtt:
-  id: partner_mqtt
-  broker:        !secret mqtt_partner_broker
-  port:          !secret mqtt_partner_port
-  username:      !secret mqtt_partner_username
-  password:      !secret mqtt_partner_password
-  client_id:     "${name}-partner"
-  topic_prefix:  "v1/t/${tenant_slug}/s/${site_slug}/i/${inverter_slug}"
-  publish_interval: 30s
+# elite_provisioning loads the ``elite-cfg`` NVS namespace at boot
+# (priority BUS+1, before WiFi / MQTT / Solarman so they can read it)
+# and exposes the values via ``id(provisioning)``-callable getters.
+# Other components read from it to avoid baking per-device data into
+# the firmware binary.
+elite_provisioning:
+  id: provisioning
 
-# Endpoint #3: Solarman cloud V5 binary push.
+# Solarman cloud V5 binary publisher.
 #
 # `register_blocks` mirrors the holding-register windows the stock LSW3
 # dongle pulls off the Deye SUN-12K-SG04LP3. Each block becomes one V5
@@ -87,15 +109,15 @@ elite_partner_mqtt:
 # windows: Lewa-Reka's `deye_hybrid_3p_lv` register map (Apache 2.0) +
 # pysolarmanv5 community-documented Solarman frame conventions.
 #
-# Tweak per inverter family:
-#   - SUN-*-SG01LP1 / SG03LP1 (1-phase HV battery) — same windows
-#   - SUN-*-SG04LP3 (3-phase LV battery, what we ship) — defaults below
-#   - GEN3 hybrids — start range shifts to 0x0500; override per device
+# In v0.2.0 the LSW3 serial is read from elite-cfg.solarman_sn — leaving
+# that key empty in NVS disables the publisher (mark_failed) so loop()
+# never spawns the FreeRTOS connect task and no second TCP socket is
+# opened.
 elite_solarman_v5:
   id: solarman_cloud
+  provisioning_id: provisioning
   server:        !secret solarman_server
   port:          !secret solarman_port
-  logger_serial: !secret solarman_logger_serial
   modbus_controller_id: ${modbus_controller_id}
   modbus_address: 0x01
   push_interval: 60s

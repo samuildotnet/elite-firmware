@@ -42,9 +42,13 @@ from esphome.const import CONF_ID, CONF_PORT
 from esphome.components import modbus_controller
 
 CONF_SERVER = "server"
+CONF_PROVISIONING_ID = "provisioning_id"
 
 CODEOWNERS = ["@elite-energy"]
 DEPENDENCIES = ["network", "modbus_controller"]
+
+elite_provisioning_ns = cg.esphome_ns.namespace("elite_provisioning")
+EliteProvisioning = elite_provisioning_ns.class_("EliteProvisioning", cg.Component)
 
 elite_solarman_v5_ns = cg.esphome_ns.namespace("elite_solarman_v5")
 EliteSolarmanV5 = elite_solarman_v5_ns.class_("EliteSolarmanV5", cg.Component)
@@ -72,7 +76,12 @@ CONFIG_SCHEMA = cv.Schema(
         cv.GenerateID(): cv.declare_id(EliteSolarmanV5),
         cv.Required(CONF_SERVER): cv.string_strict,
         cv.Optional(CONF_PORT, default=10000): cv.port,
-        cv.Required(CONF_LOGGER_SERIAL): cv.string_strict,
+        # ``logger_serial`` is now optional: when ``provisioning_id`` is
+        # set the SN is read from the elite-cfg NVS namespace at boot.
+        # Direct config (e.g. legacy dev boards without provisioned
+        # NVS) still works by passing the SN inline.
+        cv.Optional(CONF_LOGGER_SERIAL, default=""): cv.string,
+        cv.Optional(CONF_PROVISIONING_ID): cv.use_id(EliteProvisioning),
         cv.Required(CONF_MODBUS_CONTROLLER_ID): cv.use_id(
             modbus_controller.ModbusController
         ),
@@ -96,6 +105,10 @@ async def to_code(config):
     cg.add(var.set_logger_serial(config[CONF_LOGGER_SERIAL]))
     cg.add(var.set_push_interval(config[CONF_PUSH_INTERVAL]))
     cg.add(var.set_modbus_address(config[CONF_MODBUS_ADDRESS]))
+
+    if CONF_PROVISIONING_ID in config:
+        prov = await cg.get_variable(config[CONF_PROVISIONING_ID])
+        cg.add(var.set_provisioning(prov))
 
     parent = await cg.get_variable(config[CONF_MODBUS_CONTROLLER_ID])
     cg.add(var.set_modbus_controller(parent))

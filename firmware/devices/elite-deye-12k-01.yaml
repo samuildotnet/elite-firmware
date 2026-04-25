@@ -6,9 +6,10 @@
 # It glues together:
 #   1. Lewa-Reka's upstream register map (Apache 2.0) for SUN-*-SG04LP3
 #   2. Elite Energy overrides (ESP32-C3 board, MAX3485 RS485 pinout)
-#   3. Elite Energy MQTT-TLS publisher  -> elite.prygoda.xyz:8883
-#   4. Partner MQTT-TLS publisher       -> 95.60.174.157:8883
+#   3. elite_provisioning component (reads ``elite-cfg`` NVS namespace)
+#   4. Elite Energy MQTT-TLS publisher  -> mqtt.elite.prygoda.xyz:8883
 #   5. Solarman V5 binary publisher     -> iot.talent-monitoring.com:10000
+#      (gated on ``elite-cfg.solarman_sn`` — empty disables it)
 #
 # Build / flash:
 #   esphome run firmware/devices/elite-deye-12k-01.yaml
