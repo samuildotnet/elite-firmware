@@ -9,7 +9,7 @@
       "chipFamily": "ESP32-C3",
       "parts": [
         {
-          "path": "../bin/elite-deye-12k-01.factory.bin",
+          "path": "https://github.com/samuildotnet/elite-firmware/releases/download/v0.1.0/elite-deye-12k-01.factory.bin",
           "offset": 0
         }
       ]
